@@ -1,99 +1,93 @@
 from flask import Flask, jsonify, request
 from flask_cors import CORS
-import pandas as pd
-import numpy as np
-from datetime import datetime
-import sqlite3
-from pybaseball import statcast_batter
 import os
 
 app = Flask(__name__)
 CORS(app)
 
-def init_db():
-    conn = sqlite3.connect('baseball_analytics.db')
-    c = conn.cursor()
-    c.execute('''CREATE TABLE IF NOT EXISTS statcast_cache
-                 (player_id TEXT, date_fetched TEXT, data TEXT, 
-                  PRIMARY KEY (player_id, date_fetched))''')
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def calculate_quality_of_contact(df):
-    if df.empty:
-        return 0
-    avg_exit_velo = df['launch_speed'].mean()
-    exit_velo_score = min((avg_exit_velo - 80) / 3, 10)
-    optimal_angles = df[(df['launch_angle'] >= 10) & (df['launch_angle'] <= 30)]
-    optimal_angle_pct = len(optimal_angles) / len(df) * 100 if len(df) > 0 else 0
-    angle_score = min(optimal_angle_pct / 5, 10)
-    barrel_pct = (df['barrel'] == 1).sum() / len(df) * 100 if len(df) > 0 else 0
-    barrel_score = min(barrel_pct * 0.8, 10)
-    return round((exit_velo_score * 0.4 + angle_score * 0.3 + barrel_score * 0.3), 1)
-
-def fetch_statcast_data(player_id, start_date, end_date):
-    try:
-        df = statcast_batter(start_date, end_date, player_id)
-        return df
-    except:
-        return pd.DataFrame()
-
-def process_player_data(df):
-    if df.empty:
-        return None
-    
-    batted_balls = df[df['type'] == 'X']
-    hits = df[df['events'].isin(['single', 'double', 'triple', 'home_run'])]
-    at_bats = df[df['events'].notna()].shape[0]
-    avg = len(hits) / at_bats if at_bats > 0 else 0
-    
-    statcast_metrics = []
-    if not batted_balls.empty:
-        avg_exit_velo = batted_balls['launch_speed'].mean()
-        barrel_pct = (batted_balls['barrel'] == 1).sum() / len(batted_balls) * 100
-        hard_hit_pct = (batted_balls['launch_speed'] >= 95).sum() / len(batted_balls) * 100
-        
-        statcast_metrics = [
-            {'metric': 'Exit Velo', 'value': round(avg_exit_velo, 1), 'percentile': min(int((avg_exit_velo - 85) * 5), 99)},
-            {'metric': 'Barrel %', 'value': round(barrel_pct, 1), 'percentile': min(int(barrel_pct * 8), 99)},
-            {'metric': 'Hard Hit %', 'value': round(hard_hit_pct, 1), 'percentile': min(int(hard_hit_pct * 2), 99)},
-        ]
-    
-    return {
-        'basicStats': {'avg': f"{avg:.3f}", 'pa': at_bats, 'hits': len(hits), 'hr': len(df[df['events'] == 'home_run'])},
-        'customMetrics': {'qualityOfContact': calculate_quality_of_contact(df), 'plateApproach': 7.5, 'powerEfficiency': 8.2, 'consistencyScore': 7.8},
-        'statcastData': statcast_metrics,
+# Sample player data (we'll add real Statcast data later)
+SAMPLE_DATA = {
+    '592450': {  # Aaron Judge
+        'basicStats': {'avg': '.287', 'pa': 550, 'hits': 158, 'hr': 58},
+        'customMetrics': {
+            'qualityOfContact': 9.2,
+            'plateApproach': 8.5,
+            'powerEfficiency': 9.5,
+            'consistencyScore': 8.1
+        },
+        'statcastData': [
+            {'metric': 'Exit Velo', 'value': 95.2, 'percentile': 99},
+            {'metric': 'Launch Angle', 'value': 13.8, 'percentile': 78},
+            {'metric': 'Barrel %', 'value': 19.8, 'percentile': 99},
+            {'metric': 'Hard Hit %', 'value': 52.1, 'percentile': 96},
+        ],
+        'sprayChart': []
+    },
+    '660271': {  # Shohei Ohtani
+        'basicStats': {'avg': '.310', 'pa': 599, 'hits': 185, 'hr': 54},
+        'customMetrics': {
+            'qualityOfContact': 9.0,
+            'plateApproach': 8.8,
+            'powerEfficiency': 9.3,
+            'consistencyScore': 8.9
+        },
+        'statcastData': [
+            {'metric': 'Exit Velo', 'value': 93.1, 'percentile': 94},
+            {'metric': 'Launch Angle', 'value': 12.4, 'percentile': 72},
+            {'metric': 'Barrel %', 'value': 16.2, 'percentile': 95},
+            {'metric': 'Hard Hit %', 'value': 49.8, 'percentile': 92},
+        ],
+        'sprayChart': []
+    },
+    '605141': {  # Mookie Betts
+        'basicStats': {'avg': '.289', 'pa': 645, 'hits': 186, 'hr': 38},
+        'customMetrics': {
+            'qualityOfContact': 8.7,
+            'plateApproach': 9.1,
+            'powerEfficiency': 8.5,
+            'consistencyScore': 8.8
+        },
+        'statcastData': [
+            {'metric': 'Exit Velo', 'value': 91.8, 'percentile': 88},
+            {'metric': 'Launch Angle', 'value': 14.2, 'percentile': 80},
+            {'metric': 'Barrel %', 'value': 13.5, 'percentile': 89},
+            {'metric': 'Hard Hit %', 'value': 46.2, 'percentile': 85},
+        ],
         'sprayChart': []
     }
+}
 
 @app.route('/api/search', methods=['GET'])
 def search_players():
-    query = request.args.get('q', '')
+    query = request.args.get('q', '').lower()
     players = [
         {'id': '592450', 'name': 'Aaron Judge', 'team': 'NYY', 'position': 'RF'},
         {'id': '660271', 'name': 'Shohei Ohtani', 'team': 'LAD', 'position': 'DH'},
         {'id': '605141', 'name': 'Mookie Betts', 'team': 'LAD', 'position': 'RF'},
+        {'id': '660670', 'name': 'Ronald Acuña Jr.', 'team': 'ATL', 'position': 'OF'},
+        {'id': '645277', 'name': 'Juan Soto', 'team': 'NYY', 'position': 'OF'},
     ]
-    filtered = [p for p in players if query.lower() in p['name'].lower()]
+    filtered = [p for p in players if query in p['name'].lower()]
     return jsonify(filtered)
 
 @app.route('/api/player/<player_id>', methods=['GET'])
 def get_player_stats(player_id):
-    season = request.args.get('season', '2024')
-    df = fetch_statcast_data(player_id, f"{season}-04-01", f"{season}-10-01")
-    if df.empty:
-        return jsonify({'error': 'No data found'}), 404
-    return jsonify(process_player_data(df))
+    data = SAMPLE_DATA.get(player_id)
+    if not data:
+        return jsonify({'error': 'Player data not available yet'}), 404
+    return jsonify(data)
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    return jsonify({'status': 'healthy', 'timestamp': datetime.now().isoformat()})
+    return jsonify({'status': 'healthy', 'version': '1.0'})
 
 @app.route('/', methods=['GET'])
 def home():
-    return jsonify({'message': 'Baseball Analytics API', 'version': '1.0'})
+    return jsonify({
+        'message': 'Baseball Analytics API',
+        'version': '1.0',
+        'status': 'operational'
+    })
 
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 5000))
